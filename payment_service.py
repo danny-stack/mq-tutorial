@@ -13,6 +13,7 @@ from fastapi import FastAPI, HTTPException, Query
 
 from config import settings
 from models import SAMPLE_ORDERS, Order, PaymentResult
+from topology import EXCHANGE_MAP
 
 s = settings
 
@@ -64,16 +65,16 @@ async def pay_order(
         if priority is not None:
             msg_kwargs["priority"] = priority
 
-        # Fanout
-        fanout_ex = await channel.get_exchange(s.order_fulfillment_exchange)
+        # Fanout: order.fulfillment
+        fanout_ex = await channel.get_exchange(EXCHANGE_MAP["order.fulfillment"].name)
         await fanout_ex.publish(
             aio_pika.Message(body=order.model_dump_json().encode(), **msg_kwargs),
             routing_key="",
         )
-        published_to.extend([s.queue_inventory, s.queue_customs])
+        published_to.extend(["inventory_queue", "customs_queue"])
 
-        # Topic
-        topic_ex = await channel.get_exchange(s.order_compliance_exchange)
+        # Topic: order.compliance
+        topic_ex = await channel.get_exchange(EXCHANGE_MAP["order.compliance"].name)
         body = order.model_dump_json().encode()
 
         if order.has_text:
@@ -82,7 +83,7 @@ async def pay_order(
                 aio_pika.Message(body=body, **msg_kwargs),
                 routing_key=rk,
             )
-            published_to.append(f"{s.queue_nlp} (key={rk})")
+            published_to.append(f"nlp_queue (key={rk})")
 
         if order.has_image:
             rk = f"{s.routing_image_prefix}.{order_id}"
@@ -90,7 +91,7 @@ async def pay_order(
                 aio_pika.Message(body=body, **msg_kwargs),
                 routing_key=rk,
             )
-            published_to.append(f"{s.queue_cv} (key={rk})")
+            published_to.append(f"cv_queue (key={rk})")
 
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"消息发布失败: {e}")

@@ -10,8 +10,8 @@ import json
 import aio_pika
 
 from config import settings
-from consumers import COLOR_RED, COLOR_CYAN, setup_logging
-from consumers import _colorize
+from consumers import COLOR_RED, COLOR_CYAN, _colorize, setup_logging
+from topology import QUEUE_MAP
 
 REASON_MAP = {
     "rejected": "消费者 reject（处理失败/重试上限）",
@@ -30,11 +30,11 @@ async def main() -> None:
     async with connection:
         channel = await connection.channel()
         await channel.set_qos(prefetch_count=1)
-        queue = await channel.get_queue(settings.dlx_queue)
+        queue = await channel.get_queue(QUEUE_MAP["dead_letter_queue"].name)
 
         logger.info(
             "%s 已就绪，监听 [%s]（所有死信消息汇聚于此）",
-            _colorize("告警", COLOR_RED), settings.dlx_queue,
+            _colorize("告警", COLOR_RED), QUEUE_MAP["dead_letter_queue"].name,
         )
 
         async with queue.iterator() as queue_iter:

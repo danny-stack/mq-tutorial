@@ -14,6 +14,7 @@ import aio_pika
 
 from config import settings
 from consumers import COLOR_RED, COLOR_YELLOW, setup_logging
+from topology import EXCHANGE_MAP, QUEUE_MAP
 
 s = settings
 logger = logging.getLogger("mq-tutorial")
@@ -45,14 +46,10 @@ def cleanup_queues() -> None:
         conn = await aio_pika.connect_robust(s.amqp_url)
         async with conn:
             ch = await conn.channel()
-            for qn in [
-                s.queue_inventory, s.queue_customs,
-                s.queue_nlp, s.queue_cv,
-                s.retry_queue, s.dlx_queue,
-            ]:
+            for q in QUEUE_MAP.values():
                 try:
-                    q = await ch.get_queue(qn)
-                    await q.purge()
+                    queue = await ch.get_queue(q.name)
+                    await queue.purge()
                 except Exception:
                     pass
     asyncio.run(_clean())
@@ -86,6 +83,14 @@ def main() -> None:
     alert_proc = run_bg([sys.executable, "alert_service.py"])
     time.sleep(2)
 
+    # 从 topology 获取名称
+    ex_fulfillment = EXCHANGE_MAP["order.fulfillment"].name
+    ex_compliance = EXCHANGE_MAP["order.compliance"].name
+    q_inventory = QUEUE_MAP["inventory_queue"].name
+    q_customs = QUEUE_MAP["customs_queue"].name
+    q_nlp = QUEUE_MAP["nlp_queue"].name
+    q_cv = QUEUE_MAP["cv_queue"].name
+
     # ════════════════════════════════════════════════════════════
     # 场景 1: 手动 ACK
     # ════════════════════════════════════════════════════════════
@@ -98,7 +103,7 @@ def main() -> None:
         conn = await aio_pika.connect_robust(s.amqp_url)
         async with conn:
             ch = await conn.channel()
-            ex = await ch.get_exchange(s.order_compliance_exchange)
+            ex = await ch.get_exchange(ex_compliance)
             body = json.dumps({
                 "order_id": "S1-CRASH-001",
                 "customer": "测试用户",
@@ -118,7 +123,7 @@ def main() -> None:
             "    conn = await aio_pika.connect_robust('amqp://guest:guest@localhost/')\n"
             "    ch = await conn.channel()\n"
             "    await ch.set_qos(prefetch_count=1)\n"
-            f"    q = await ch.get_queue('{s.queue_nlp}')\n"
+            f"    q = await ch.get_queue('{q_nlp}')\n"
             "    async with q.iterator() as it:\n"
             "        async for msg in it:\n"
             "            body = json.loads(msg.body.decode())\n"
@@ -156,7 +161,7 @@ def main() -> None:
         conn = await aio_pika.connect_robust(s.amqp_url)
         async with conn:
             ch = await conn.channel()
-            ex = await ch.get_exchange(s.order_compliance_exchange)
+            ex = await ch.get_exchange(ex_compliance)
             body = json.dumps({
                 "order_id": "S2-FAIL-001",
                 "customer": "失败测试",
@@ -183,7 +188,7 @@ def main() -> None:
         "    conn = await aio_pika.connect_robust('amqp://guest:guest@localhost/')\n"
         "    ch = await conn.channel()\n"
         "    await ch.set_qos(prefetch_count=1)\n"
-        f"    q = await ch.get_queue('{s.queue_cv}')\n"
+        f"    q = await ch.get_queue('{q_cv}')\n"
         "    async with q.iterator() as it:\n"
         "        async for msg in it:\n"
         "            body = json.loads(msg.body.decode())\n"
@@ -225,7 +230,7 @@ def main() -> None:
         conn = await aio_pika.connect_robust(s.amqp_url)
         async with conn:
             ch = await conn.channel()
-            ex = await ch.get_exchange(s.order_fulfillment_exchange)
+            ex = await ch.get_exchange(ex_fulfillment)
             for i in range(10):
                 body = json.dumps({
                     "order_id": f"S3-LOAD-{i + 1:03d}",
@@ -257,7 +262,7 @@ def main() -> None:
         conn = await aio_pika.connect_robust(s.amqp_url)
         async with conn:
             ch = await conn.channel()
-            ex = await ch.get_exchange(s.order_fulfillment_exchange)
+            ex = await ch.get_exchange(ex_fulfillment)
             for i in range(5):
                 body = json.dumps({
                     "order_id": f"S4-NORMAL-{i + 1:03d}",
@@ -312,7 +317,7 @@ def main() -> None:
         conn = await aio_pika.connect_robust(s.amqp_url)
         async with conn:
             ch = await conn.channel()
-            ex = await ch.get_exchange(s.order_fulfillment_exchange)
+            ex = await ch.get_exchange(ex_fulfillment)
             body = json.dumps({
                 "order_id": "S5-DUP-001",
                 "customer": "重复测试",
@@ -345,7 +350,7 @@ def main() -> None:
         conn = await aio_pika.connect_robust(s.amqp_url)
         async with conn:
             ch = await conn.channel()
-            ex = await ch.get_exchange(s.order_fulfillment_exchange)
+            ex = await ch.get_exchange(ex_fulfillment)
             body = json.dumps({
                 "order_id": "S6-TTL-001",
                 "customer": "超时测试",

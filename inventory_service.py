@@ -8,6 +8,7 @@ import sys
 
 from config import settings
 from consumers import COLOR_GREEN, run_consumer, setup_logging
+from topology import QUEUE_MAP
 
 
 async def process(body: dict) -> None:
@@ -20,7 +21,7 @@ async def main() -> None:
     setup_logging()
     worker_id = sys.argv[1] if len(sys.argv) > 1 else ""
     await run_consumer(
-        queue_name=settings.queue_inventory,
+        queue_name=QUEUE_MAP["inventory_queue"].name,
         tag="库存",
         color=COLOR_GREEN,
         process_fn=process,

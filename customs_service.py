@@ -7,6 +7,7 @@ import asyncio
 
 from config import settings
 from consumers import COLOR_YELLOW, run_consumer, setup_logging
+from topology import QUEUE_MAP
 
 
 async def process(body: dict) -> None:
@@ -19,7 +20,7 @@ async def process(body: dict) -> None:
 async def main() -> None:
     setup_logging()
     await run_consumer(
-        queue_name=settings.queue_customs,
+        queue_name=QUEUE_MAP["customs_queue"].name,
         tag="海关",
         color=COLOR_YELLOW,
         process_fn=process,
