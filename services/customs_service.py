@@ -1,12 +1,16 @@
 """海关服务 — Fanout 消费者（TTL 演示）
 
-启动：python customs_service.py
+启动：python services/customs_service.py
 """
 
 import asyncio
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config import settings
-from consumers import COLOR_YELLOW, run_consumer, setup_logging
+from mq.consumer import COLOR_YELLOW, run_consumer, setup_logging
 from topology import QUEUE_MAP
 
 

@@ -1,13 +1,16 @@
 """库存服务 — Fanout 消费者（Priority + Competing Consumers）
 
-启动：python inventory_service.py [worker_id]
+启动：python services/inventory_service.py [worker_id]
 """
 
 import asyncio
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config import settings
-from consumers import COLOR_GREEN, run_consumer, setup_logging
+from mq.consumer import COLOR_GREEN, run_consumer, setup_logging
 from topology import QUEUE_MAP
 
 

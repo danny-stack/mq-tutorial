@@ -25,22 +25,22 @@ lint:
 
 # 分步启动（各开一个终端）
 svc-payment:
-	uvicorn payment_service:app --port $(shell grep API_PORT .env 2>/dev/null | cut -d= -f2 || echo 8000) --reload
+	uvicorn services.payment_service:app --port $(shell grep API_PORT .env 2>/dev/null | cut -d= -f2 || echo 8000) --reload
 
 svc-inventory:
-	python inventory_service.py
+	python services/inventory_service.py
 
 svc-inventory-2:
-	python inventory_service.py 2
+	python services/inventory_service.py 2
 
 svc-customs:
-	python customs_service.py
+	python services/customs_service.py
 
 svc-nlp:
-	python nlp_service.py
+	python services/nlp_service.py
 
 svc-cv:
-	python cv_service.py
+	python services/cv_service.py
 
 svc-alert:
-	python alert_service.py
+	python services/alert_service.py

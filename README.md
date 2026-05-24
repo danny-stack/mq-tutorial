@@ -149,16 +149,16 @@ python run_demo.py
 # 终端 0: 声明资源
 python setup_exchanges.py
 
-# 终端 1-5: 启动消费者
-python inventory_service.py          # 库存 (Fanout, Priority)
-python inventory_service.py 2        # 库存 Worker 2 (Competing Consumers)
-python customs_service.py            # 海关 (Fanout, TTL)
-python nlp_service.py                # NLP (Topic)
-python cv_service.py                 # CV (Topic, 可随机失败)
-python alert_service.py              # 死信告警
+# 终端 1-6: 启动消费者
+python services/inventory_service.py          # 库存 (Fanout, Priority)
+python services/inventory_service.py 2        # 库存 Worker 2 (Competing Consumers)
+python services/customs_service.py            # 海关 (Fanout, TTL)
+python services/nlp_service.py                # NLP (Topic)
+python services/cv_service.py                 # CV (Topic, 可随机失败)
+python services/alert_service.py              # 死信告警
 
-# 终端 6: 启动 FastAPI
-uvicorn payment_service:app --port 8000
+# 终端 7: 启动 FastAPI
+uvicorn services.payment_service:app --port 8000
 
 # 终端 7: 触发支付
 curl -X POST http://localhost:8000/orders/CN-20260524-001/pay | python -m json.tool
@@ -192,18 +192,23 @@ curl -X POST "http://localhost:8000/orders/batch?count=10"
 
 ```
 ├── docker-compose.yml        # RabbitMQ 服务
-├── requirements.txt          # Python 依赖
-├── config.py                 # 共享配置（含 DLX/Retry/Priority）
+├── pyproject.toml            # 项目元数据与依赖
+├── Makefile                  # 常用命令（make run / make setup 等）
+├── .env.example              # 环境变量模板
+├── config.py                 # 应用配置（pydantic-settings）
+├── topology.py               # Exchange/Queue/Binding 声明式定义
 ├── models.py                 # Pydantic 数据模型
-├── setup_exchanges.py        # 声明 Exchange/Queue/Binding/DLX
-├── payment_service.py        # FastAPI 发布者（支持 priority + batch）
-├── consumers.py              # 通用消费者框架（手动ACK/重试/幂等）
-├── inventory_service.py      # 库存消费者 (Fanout, Priority)
-├── customs_service.py        # 海关消费者 (Fanout, TTL)
-├── nlp_service.py            # NLP 消费者 (Topic)
-├── cv_service.py             # CV 消费者 (Topic, 随机失败)
-├── alert_service.py          # 死信告警服务 (DLX)
-└── run_demo.py               # 6 场景一键演示
+├── setup_exchanges.py        # 根据 topology.py 创建 MQ 资源
+├── run_demo.py               # 6 场景一键演示
+├── mq/
+│   └── consumer.py           # 消费者框架（手动ACK/重试/幂等）
+└── services/
+    ├── payment_service.py    # FastAPI 发布者（priority + batch）
+    ├── inventory_service.py  # 库存消费者 (Fanout, Priority)
+    ├── customs_service.py    # 海关消费者 (Fanout, TTL)
+    ├── nlp_service.py        # NLP 消费者 (Topic)
+    ├── cv_service.py         # CV 消费者 (Topic, 随机失败)
+    └── alert_service.py      # 死信告警服务 (DLX)
 ```
 
 ## 生产环境检查清单

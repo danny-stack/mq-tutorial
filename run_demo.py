@@ -80,7 +80,7 @@ def main() -> None:
     subprocess.run([sys.executable, "setup_exchanges.py"], check=True)
 
     # ── 启动 alert_service ─────────────────────────────────────
-    alert_proc = run_bg([sys.executable, "alert_service.py"])
+    alert_proc = run_bg([sys.executable, "services/alert_service.py"])
     time.sleep(2)
 
     # 从 topology 获取名称
@@ -142,7 +142,7 @@ def main() -> None:
         wait(2, "等待 RabbitMQ 检测到连接断开，消息重入队列")
 
         section("启动正常的 NLP 消费者...")
-        nlp_proc = run_bg([sys.executable, "nlp_service.py"])
+        nlp_proc = run_bg([sys.executable, "services/nlp_service.py"])
         wait(3, "等待 NLP 消费者处理重入队列的消息")
         nlp_proc.terminate()
 
@@ -221,8 +221,8 @@ def main() -> None:
     cleanup_queues()
 
     section("启动 2 个库存 Worker 实例...")
-    inv1 = run_bg([sys.executable, "inventory_service.py", "1"])
-    inv2 = run_bg([sys.executable, "inventory_service.py", "2"])
+    inv1 = run_bg([sys.executable, "services/inventory_service.py", "1"])
+    inv2 = run_bg([sys.executable, "services/inventory_service.py", "2"])
     wait(2, "等待 Worker 就绪")
 
     section("发送 10 笔订单到库存队列...")
@@ -295,7 +295,7 @@ def main() -> None:
     asyncio.run(scenario4_send())
 
     section("现在启动库存消费者...")
-    inv_proc = run_bg([sys.executable, "inventory_service.py"])
+    inv_proc = run_bg([sys.executable, "services/inventory_service.py"])
     wait(6, "等待消费者按优先级处理")
     inv_proc.terminate()
     section("结果：VIP 订单(priority=10) 虽然最后发送，但最先被处理！✓")
@@ -309,7 +309,7 @@ def main() -> None:
     cleanup_queues()
 
     section("启动库存消费者（幂等模式）...")
-    inv_proc = run_bg([sys.executable, "inventory_service.py"])
+    inv_proc = run_bg([sys.executable, "services/inventory_service.py"])
     wait(2, "等待就绪")
 
     section("发送同一订单 S5-DUP-001 两次...")

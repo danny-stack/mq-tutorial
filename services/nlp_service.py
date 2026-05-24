@@ -1,12 +1,16 @@
 """NLP 合规审查服务 — Topic 消费者 (routing key: compliance.text.*)
 
-启动：python nlp_service.py
+启动：python services/nlp_service.py
 """
 
 import asyncio
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config import settings
-from consumers import COLOR_BLUE, run_consumer, setup_logging
+from mq.consumer import COLOR_BLUE, run_consumer, setup_logging
 from topology import QUEUE_MAP
 
 

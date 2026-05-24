@@ -1,12 +1,16 @@
 """CV 合规审查服务 — Topic 消费者 (routing key: compliance.image.*)
 
-启动：python cv_service.py
+启动：python services/cv_service.py
 """
 
 import asyncio
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config import settings
-from consumers import COLOR_MAGENTA, run_consumer, setup_logging
+from mq.consumer import COLOR_MAGENTA, run_consumer, setup_logging
 from topology import QUEUE_MAP
 
 

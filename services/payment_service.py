@@ -1,8 +1,13 @@
 """Payment Service — FastAPI 发布者（生产级）
 
 支持：priority 优先级、message_id 幂等、batch 批量发送。
-启动方式：uvicorn payment_service:app --reload
+启动方式：python -m services.payment_service
 """
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import time
 from contextlib import asynccontextmanager

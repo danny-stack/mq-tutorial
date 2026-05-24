@@ -1,16 +1,20 @@
 """告警服务 — Dead Letter Queue 消费者
 
 接收所有被 reject / TTL 过期 / 重试上限耗尽的消息，打印告警。
-启动：python alert_service.py
+启动：python services/alert_service.py
 """
 
 import asyncio
 import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import aio_pika
 
 from config import settings
-from consumers import COLOR_RED, COLOR_CYAN, _colorize, setup_logging
+from mq.consumer import COLOR_RED, COLOR_CYAN, _colorize, setup_logging
 from topology import QUEUE_MAP
 
 REASON_MAP = {
