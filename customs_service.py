@@ -1,28 +1,30 @@
-"""海关服务 — Fanout 消费者
+"""海关服务 — Fanout 消费者（TTL 演示）
 
-启动方式：python customs_service.py
+启动：python customs_service.py
 """
 
 import asyncio
 
-from config import QUEUE_CUSTOMS, SIMULATE_CUSTOMS
-from consumers import COLOR_YELLOW, log, run_consumer
+from config import settings
+from consumers import COLOR_YELLOW, run_consumer, setup_logging
 
 
-def process(body: dict):
+async def process(body: dict) -> None:
     customer = body.get("customer", "未知")
     items = body.get("items", [])
     item_names = ", ".join(item.get("name", "") for item in items)
-    log("海关", COLOR_YELLOW, f"  申报人: {customer}, 商品: {item_names}")
+    print(f"    申报人: {customer}, 商品: {item_names}", flush=True)
 
 
-async def main():
+async def main() -> None:
+    setup_logging()
     await run_consumer(
-        queue_name=QUEUE_CUSTOMS,
+        queue_name=settings.queue_customs,
         tag="海关",
         color=COLOR_YELLOW,
-        simulate_seconds=SIMULATE_CUSTOMS,
         process_fn=process,
+        simulate_seconds=settings.simulate_customs,
+        idempotent=True,
     )
 
 

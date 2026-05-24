@@ -20,23 +20,18 @@
 ## 架构
 
 ```
-  HTTP POST /orders/{id}/pay
-           │
-     FastAPI (Payment Service)
-           │ aio-pika publish
-     ┌─────┴──────────────────────────┐
-     │                                │
-[Fanout: order.fulfillment]    [Topic: order.compliance]
-   │            │                 │             │
-   ▼            ▼                 ▼             ▼
-库存服务    海关服务          NLP 服务      CV 服务
-(0.5s)      (3s)             (2s)          (4s)
-```
+                    ┌─ inventory_queue ──── [Worker 1] ──┐  ← Competing Consumers
+order.fulfillment ──┤                              [Worker 2] ──┤  (多实例负载均衡)
+   [Fanout]         └─ customs_queue (TTL=8s) ──── [Worker]
+                                           过期 → DLX
 
-- **Fanout Exchange**：广播给库存 + 海关（无条件分发，绑定即收到）
-- **Topic Exchange**：根据 routing key 路由
-  - `compliance.text.*` → NLP 服务（文本审查）
-  - `compliance.image.*` → CV 服务（图片审查）
+                    ┌─ nlp_queue ───────── [Worker]
+order.compliance ───┤
+   [Topic]          └─ cv_queue ────────── [Worker]
+                        失败 → retry → 重试3次 → DLX
+
+dead_letter_queue ────── [告警服务]  ← 所有失败/过期的消息最终汇聚于此
+```
 
 ## 快速开始
 
@@ -57,53 +52,134 @@ pip install -r requirements.txt
 docker compose up -d
 ```
 
-### 3. 一键演示
+### 3. 一键演示（6 个生产级场景）
 
 ```bash
 python run_demo.py
 ```
 
-脚本会自动：启动 RabbitMQ → 声明 Exchange/Queue → 启动所有服务 → 发送 3 笔测试订单 → 展示异步效果。
-
 ### 4. 管理面板
 
-浏览器打开 http://localhost:15672（guest/guest），可以看到 Queues 页面中的 4 个队列和消息流量。
+浏览器打开 http://localhost:15672（guest/guest），可以看到 Queues 页面中的队列和消息流量。
+
+---
+
+## 6 个生产级场景详解
+
+### 场景 1: 手动 ACK — 消费者崩溃不丢消息
+
+**问题**：消费者处理到一半崩溃，消息是否丢失？
+
+**方案**：手动 ACK（Manual Acknowledgement）。消费者处理完业务逻辑后才发送 ACK 确认。如果消费者在 ACK 之前崩溃（断开连接），RabbitMQ 检测到连接断开后会把消息重新放回队列，由其他消费者重新消费。
+
+```
+消费者收到消息 → 处理中... → 💥崩溃（未ACK）
+    → RabbitMQ 检测到连接断开
+    → 消息重入队列
+    → 新消费者收到同一条消息，重新处理
+```
+
+### 场景 2: Dead Letter Queue — 重试上限保护
+
+**问题**：消费者反复失败，消息无限重试拖垮系统。
+
+**方案**：Dead Letter Exchange (DLX)。每个业务队列绑定一个 DLX，当消息被 reject 或过期时，自动转发到 DLX。配合重试计数器（`x-retry-count`），超过最大重试次数后消息进入死信队列，由专门的告警服务处理。
+
+```
+消息处理失败 → retry_count < 3? → reject(requeue=False) → DLX → 告警服务
+                                 → 是 → 重新发布（retry_count+1）→ 再次消费
+```
+
+### 场景 3: Competing Consumers — 多实例负载均衡
+
+**问题**：单个消费者处理不过来，队列积压。
+
+**方案**：启动同一队列的多个消费者实例。RabbitMQ 的 `prefetch_count=1` 确保每条消息只投递给一个消费者，实现自动负载均衡。水平扩展只需多跑几个 Worker 进程。
+
+```
+队列中有 10 条消息
+    → Worker 1 消费 5 条
+    → Worker 2 消费 5 条
+    → 总耗时减半
+```
+
+### 场景 4: Priority Queue — VIP 订单优先处理
+
+**问题**：VIP 客户的订单排在普通订单后面，体验差。
+
+**方案**：队列声明时设置 `x-max-priority`，发布消息时指定 `priority` 字段。RabbitMQ 优先投递高优先级消息，即使它后进队列。
+
+```
+队列中：[普通(p=1), 普通(p=1), 普通(p=1), ..., VIP(p=10)]
+消费者取消息时：先取 VIP(p=10)，再按顺序取普通
+```
+
+### 场景 5: 幂等消费 — 重复消息不重复处理
+
+**问题**：网络抖动导致消息重复投递，库存被扣两次。
+
+**方案**：消费者维护已处理的 `order_id` 集合（生产环境用 Redis/DB），收到消息后先检查是否已处理。如果已处理，直接 ACK 跳过，不执行业务逻辑。
+
+```
+同一 order_id 的消息发送 2 次
+    → 第 1 次：正常处理，order_id 加入已处理集合
+    → 第 2 次：检测到重复，直接 ACK，不扣库存
+```
+
+### 场景 6: Message TTL — 超时自动过期
+
+**问题**：海关服务宕机，消息在队列中无限等待。
+
+**方案**：队列声明时设置 `x-message-ttl`（毫秒）。消息在队列中等待超过 TTL 后，自动被移除并转发到 DLX，由告警服务通知运维。
+
+```
+海关队列 TTL=8s
+    → 消息入队
+    → 8s 内无消费者 → 消息过期
+    → 转发到 DLX → 告警服务发出通知
+```
+
+---
 
 ## 分步教程
 
-如果想手动观察每一步，开 6 个终端：
+如果想手动观察每一步：
 
 ```bash
 # 终端 0: 声明资源
 python setup_exchanges.py
 
-# 终端 1-4: 启动消费者
-python inventory_service.py   # Fanout 消费者
-python customs_service.py     # Fanout 消费者
-python nlp_service.py         # Topic 消费者
-python cv_service.py          # Topic 消费者
+# 终端 1-5: 启动消费者
+python inventory_service.py          # 库存 (Fanout, Priority)
+python inventory_service.py 2        # 库存 Worker 2 (Competing Consumers)
+python customs_service.py            # 海关 (Fanout, TTL)
+python nlp_service.py                # NLP (Topic)
+python cv_service.py                 # CV (Topic, 可随机失败)
+python alert_service.py              # 死信告警
 
-# 终端 5: 启动 FastAPI
+# 终端 6: 启动 FastAPI
 uvicorn payment_service:app --port 8000
 
-# 终端 6: 触发支付
+# 终端 7: 触发支付
 curl -X POST http://localhost:8000/orders/CN-20260524-001/pay | python -m json.tool
 ```
 
-### 测试不同内容类型的路由
+### API 参数
 
 ```bash
-# 文本+图片 → NLP 和 CV 都收到
+# 普通订单
 curl -X POST http://localhost:8000/orders/CN-20260524-001/pay
 
-# 仅文本 → 只有 NLP 收到
-curl -X POST http://localhost:8000/orders/CN-20260524-002/pay
+# VIP 订单 (priority=10)
+curl -X POST "http://localhost:8000/orders/CN-20260524-001/pay?priority=10"
 
-# 仅图片 → 只有 CV 收到
-curl -X POST http://localhost:8000/orders/CN-20260524-003/pay
+# 批量发送 10 笔订单
+curl -X POST "http://localhost:8000/orders/batch?count=10"
 ```
 
-## Fanout vs Topic 对比
+---
+
+## Exchange 对比
 
 | 特性 | Fanout Exchange | Topic Exchange |
 |------|----------------|----------------|
@@ -117,34 +193,34 @@ curl -X POST http://localhost:8000/orders/CN-20260524-003/pay
 ```
 ├── docker-compose.yml        # RabbitMQ 服务
 ├── requirements.txt          # Python 依赖
-├── config.py                 # 共享配置
+├── config.py                 # 共享配置（含 DLX/Retry/Priority）
 ├── models.py                 # Pydantic 数据模型
-├── setup_exchanges.py        # 声明 Exchange/Queue/Binding
-├── payment_service.py        # FastAPI 发布者
-├── inventory_service.py      # 库存消费者 (Fanout)
-├── customs_service.py        # 海关消费者 (Fanout)
+├── setup_exchanges.py        # 声明 Exchange/Queue/Binding/DLX
+├── payment_service.py        # FastAPI 发布者（支持 priority + batch）
+├── consumers.py              # 通用消费者框架（手动ACK/重试/幂等）
+├── inventory_service.py      # 库存消费者 (Fanout, Priority)
+├── customs_service.py        # 海关消费者 (Fanout, TTL)
 ├── nlp_service.py            # NLP 消费者 (Topic)
-├── cv_service.py             # CV 消费者 (Topic)
-├── consumers.py              # 通用消费者工具
-└── run_demo.py               # 一键演示脚本
+├── cv_service.py             # CV 消费者 (Topic, 随机失败)
+├── alert_service.py          # 死信告警服务 (DLX)
+└── run_demo.py               # 6 场景一键演示
 ```
 
-## 生产环境建议
+## 生产环境检查清单
 
-- **消息持久化**：Exchange 和 Queue 设为 `durable=True`，消息设为 `delivery_mode=PERSISTENT`（本教程已实现）
-- **手动 ACK**：处理完成后才确认，防止消息丢失（本教程已实现）
-- **死信队列 (DLX)**：处理失败的消息自动进入死信队列，便于排查
-- **连接重连**：使用 `aio_pika.connect_robust()` 自动重连（本教程已实现）
-- **限流**：`prefetch_count=1` 防止消费者被消息淹没（本教程已实现）
-- **监控告警**：通过 RabbitMQ Management API 监控队列积压
-- **幂等消费**：消费者应支持重复消息，用 order_id 去重
+- **消息持久化**：Exchange 和 Queue `durable=True`，消息 `delivery_mode=PERSISTENT` ✓
+- **手动 ACK**：处理完成后才确认，崩溃后消息重入队列 ✓
+- **死信队列 (DLX)**：reject/TTL 过期的消息集中处理 ✓
+- **重试上限**：`x-retry-count` 计数，超过后进 DLX ✓
+- **幂等消费**：`order_id` 去重，防止重复处理 ✓
+- **连接重连**：`aio_pika.connect_robust()` 自动重连 ✓
+- **限流**：`prefetch_count=1` 防止消费者被消息淹没 ✓
+- **优先级队列**：`x-max-priority` 支持 VIP 订单插队 ✓
+- **消息 TTL**：`x-message-ttl` 防止过时消息无限堆积 ✓
 
 ## 清理
 
 ```bash
-# 停止所有服务
-docker compose down
-
-# 删除 RabbitMQ 数据
-docker compose down -v
+docker compose down      # 停止
+docker compose down -v   # 停止并删除数据
 ```

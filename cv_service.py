@@ -1,27 +1,29 @@
 """CV 合规审查服务 — Topic 消费者 (routing key: compliance.image.*)
 
-启动方式：python cv_service.py
+启动：python cv_service.py
 """
 
 import asyncio
 
-from config import QUEUE_CV, SIMULATE_CV
-from consumers import COLOR_MAGENTA, log, run_consumer
+from config import settings
+from consumers import COLOR_MAGENTA, run_consumer, setup_logging
 
 
-def process(body: dict):
+async def process(body: dict) -> None:
     items = body.get("items", [])
     images = [item.get("image_url") for item in items if item.get("image_url")]
-    log("CV", COLOR_MAGENTA, f"  图片合规检查: {len(images)} 张 — 全部通过")
+    print(f"    图片合规检查: {len(images)} 张 — 全部通过", flush=True)
 
 
-async def main():
+async def main() -> None:
+    setup_logging()
     await run_consumer(
-        queue_name=QUEUE_CV,
+        queue_name=settings.queue_cv,
         tag="CV",
         color=COLOR_MAGENTA,
-        simulate_seconds=SIMULATE_CV,
         process_fn=process,
+        simulate_seconds=settings.simulate_cv,
+        idempotent=True,
     )
 
 

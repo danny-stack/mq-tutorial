@@ -1,0 +1,27 @@
+[project]
+name = "mq-tutorial"
+version = "1.0.0"
+description = "跨境电商异步消息枢纽 — RabbitMQ Tutorial (Fanout + Topic + DLX)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = [
+    "aio-pika>=9.5",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "httpx>=0.28",
+    "pydantic>=2.11",
+    "pydantic-settings>=2.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.8",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

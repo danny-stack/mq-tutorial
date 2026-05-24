@@ -1,5 +1,6 @@
 """声明 RabbitMQ Exchange、Queue、Binding 关系
 
+包含：业务 Exchange、Dead Letter Exchange、Retry Exchange、带参数的业务队列。
 运行方式：python setup_exchanges.py
 """
 
@@ -8,65 +9,94 @@ import sys
 
 import aio_pika
 
-from config import (
-    AMQP_URL,
-    BINDING_IMAGE,
-    BINDING_TEXT,
-    ORDER_COMPLIANCE_EXCHANGE,
-    ORDER_FULFILLMENT_EXCHANGE,
-    QUEUE_CV,
-    QUEUE_CUSTOMS,
-    QUEUE_INVENTORY,
-    QUEUE_NLP,
-)
+from config import settings
 
 
-async def setup():
-    connection = await aio_pika.connect_robust(AMQP_URL)
+async def setup() -> None:
+    connection = await aio_pika.connect_robust(settings.amqp_url)
     async with connection:
         channel = await connection.channel()
 
-        # ── 声明 Exchange ──────────────────────────────────
+        s = settings
+
+        # ── 0. 清理旧队列（参数变更时必须先删除重建）──────────
+        for qn in [
+            s.queue_inventory, s.queue_customs, s.queue_nlp, s.queue_cv,
+            s.retry_queue, s.dlx_queue,
+        ]:
+            try:
+                await channel.queue_delete(qn)
+            except Exception:
+                pass
+
+        # ── 1. Dead Letter Exchange (fanout) ─────────────────
         await channel.declare_exchange(
-            ORDER_FULFILLMENT_EXCHANGE,
-            aio_pika.ExchangeType.FANOUT,
-            durable=True,
+            s.dlx_name, aio_pika.ExchangeType.FANOUT, durable=True
         )
-        print(f"  Exchange [{ORDER_FULFILLMENT_EXCHANGE}] (fanout) 已声明")
+        await channel.declare_queue(s.dlx_queue, durable=True)
+        dlx_ex = await channel.get_exchange(s.dlx_name)
+        await (await channel.get_queue(s.dlx_queue)).bind(dlx_ex)
+        print(f"  [DLX] {s.dlx_name} (fanout) → {s.dlx_queue}")
+
+        # ── 2. Retry Exchange (direct) ───────────────────────
+        await channel.declare_exchange(
+            s.retry_exchange, aio_pika.ExchangeType.DIRECT, durable=True
+        )
+        await channel.declare_queue(
+            s.retry_queue,
+            durable=True,
+            arguments={
+                "x-message-ttl": s.retry_ttl_ms,
+                "x-dead-letter-exchange": s.order_compliance_exchange,
+            },
+        )
+        await (await channel.get_queue(s.retry_queue)).bind(
+            await channel.get_exchange(s.retry_exchange),
+            routing_key=s.queue_cv,
+        )
+        print(f"  [Retry] {s.retry_exchange} (direct) → {s.retry_queue} (TTL={s.retry_ttl_ms}ms)")
+
+        # ── 3. 业务 Exchange ─────────────────────────────────
+        await channel.declare_exchange(
+            s.order_fulfillment_exchange, aio_pika.ExchangeType.FANOUT, durable=True
+        )
+        print(f"  Exchange [{s.order_fulfillment_exchange}] (fanout)")
 
         await channel.declare_exchange(
-            ORDER_COMPLIANCE_EXCHANGE,
-            aio_pika.ExchangeType.TOPIC,
-            durable=True,
+            s.order_compliance_exchange, aio_pika.ExchangeType.TOPIC, durable=True
         )
-        print(f"  Exchange [{ORDER_COMPLIANCE_EXCHANGE}] (topic)  已声明")
+        print(f"  Exchange [{s.order_compliance_exchange}] (topic)")
 
-        # ── 声明 Queue ─────────────────────────────────────
+        # ── 4. 业务 Queue（带 DLX / TTL / Priority 参数）─────
         queues = {
-            QUEUE_INVENTORY: "库存队列",
-            QUEUE_CUSTOMS: "海关队列",
-            QUEUE_NLP: "NLP 合规队列",
-            QUEUE_CV: "CV 合规队列",
+            s.queue_inventory: ("库存队列", s.queue_args_inventory),
+            s.queue_customs: ("海关队列", s.queue_args_customs),
+            s.queue_nlp: ("NLP 合规队列", s.queue_args_nlp),
+            s.queue_cv: ("CV 合规队列", s.queue_args_cv),
         }
-        for queue_name, desc in queues.items():
-            await channel.declare_queue(queue_name, durable=True)
-            print(f"  Queue [{queue_name}] ({desc}) 已声明")
+        for queue_name, (desc, args) in queues.items():
+            await channel.declare_queue(queue_name, durable=True, arguments=args)
+            extras = []
+            if "x-max-priority" in args:
+                extras.append(f"priority={args['x-max-priority']}")
+            if "x-message-ttl" in args:
+                extras.append(f"TTL={args['x-message-ttl']}ms")
+            extras_str = f" ({', '.join(extras)})" if extras else ""
+            print(f"  Queue [{queue_name}] ({desc}){extras_str} → DLX={s.dlx_name}")
 
-        # ── Binding ────────────────────────────────────────
-        # Fanout: 绑定库存和海关队列
-        fanout_ex = await channel.get_exchange(ORDER_FULFILLMENT_EXCHANGE)
-        await (await channel.get_queue(QUEUE_INVENTORY)).bind(fanout_ex)
-        await (await channel.get_queue(QUEUE_CUSTOMS)).bind(fanout_ex)
-        print(f"  {QUEUE_INVENTORY}, {QUEUE_CUSTOMS} → {ORDER_FULFILLMENT_EXCHANGE} (fanout)")
+        # ── 5. Binding ───────────────────────────────────────
+        fanout_ex = await channel.get_exchange(s.order_fulfillment_exchange)
+        await (await channel.get_queue(s.queue_inventory)).bind(fanout_ex)
+        await (await channel.get_queue(s.queue_customs)).bind(fanout_ex)
+        print(f"  {s.queue_inventory}, {s.queue_customs} → {s.order_fulfillment_exchange} (fanout)")
 
-        # Topic: 绑定 NLP 和 CV 队列
-        topic_ex = await channel.get_exchange(ORDER_COMPLIANCE_EXCHANGE)
-        await (await channel.get_queue(QUEUE_NLP)).bind(topic_ex, routing_key=BINDING_TEXT)
-        await (await channel.get_queue(QUEUE_CV)).bind(topic_ex, routing_key=BINDING_IMAGE)
-        print(f"  {QUEUE_NLP}  → {ORDER_COMPLIANCE_EXCHANGE} (binding: {BINDING_TEXT})")
-        print(f"  {QUEUE_CV}  → {ORDER_COMPLIANCE_EXCHANGE} (binding: {BINDING_IMAGE})")
+        topic_ex = await channel.get_exchange(s.order_compliance_exchange)
+        await (await channel.get_queue(s.queue_nlp)).bind(topic_ex, routing_key=s.binding_text)
+        await (await channel.get_queue(s.queue_cv)).bind(topic_ex, routing_key=s.binding_image)
+        print(f"  {s.queue_nlp}  → {s.order_compliance_exchange} (binding: {s.binding_text})")
+        print(f"  {s.queue_cv}  → {s.order_compliance_exchange} (binding: {s.binding_image})")
 
-        print("\n所有 Exchange / Queue / Binding 已就绪")
+        print("\n所有资源已就绪 ✓")
 
 
 if __name__ == "__main__":
@@ -75,5 +105,5 @@ if __name__ == "__main__":
         asyncio.run(setup())
     except Exception as e:
         print(f"\n连接失败: {e}")
-        print("请确认 RabbitMQ 已启动: docker-compose up -d")
+        print("请确认 RabbitMQ 已启动: docker compose up -d")
         sys.exit(1)

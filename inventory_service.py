@@ -1,27 +1,32 @@
-"""库存服务 — Fanout 消费者
+"""库存服务 — Fanout 消费者（Priority + Competing Consumers）
 
-启动方式：python inventory_service.py
+启动：python inventory_service.py [worker_id]
 """
 
 import asyncio
+import sys
 
-from config import QUEUE_INVENTORY, SIMULATE_INVENTORY
-from consumers import COLOR_GREEN, log, run_consumer
+from config import settings
+from consumers import COLOR_GREEN, run_consumer, setup_logging
 
 
-def process(body: dict):
+async def process(body: dict) -> None:
     items = body.get("items", [])
     total = sum(item.get("quantity", 0) for item in items)
-    log("库存", COLOR_GREEN, f"  已扣减 {total} 件商品库存")
+    print(f"    已扣减 {total} 件商品库存", flush=True)
 
 
-async def main():
+async def main() -> None:
+    setup_logging()
+    worker_id = sys.argv[1] if len(sys.argv) > 1 else ""
     await run_consumer(
-        queue_name=QUEUE_INVENTORY,
+        queue_name=settings.queue_inventory,
         tag="库存",
         color=COLOR_GREEN,
-        simulate_seconds=SIMULATE_INVENTORY,
         process_fn=process,
+        simulate_seconds=settings.simulate_inventory,
+        idempotent=True,
+        worker_id=worker_id,
     )
 
 

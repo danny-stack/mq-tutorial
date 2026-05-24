@@ -1,27 +1,78 @@
-"""共享配置：RabbitMQ 连接参数、Exchange / Queue 名称常量"""
+"""共享配置 — pydantic-settings 管理所有参数，支持 .env 文件和环境变量"""
 
-AMQP_URL = "amqp://guest:guest@localhost/"
+from pydantic_settings import BaseSettings
 
-# Exchange
-ORDER_FULFILLMENT_EXCHANGE = "order.fulfillment"  # fanout
-ORDER_COMPLIANCE_EXCHANGE = "order.compliance"  # topic
 
-# Queue
-QUEUE_INVENTORY = "inventory_queue"
-QUEUE_CUSTOMS = "customs_queue"
-QUEUE_NLP = "nlp_queue"
-QUEUE_CV = "cv_queue"
+class Settings(BaseSettings):
+    # RabbitMQ
+    amqp_url: str = "amqp://guest:guest@localhost/"
 
-# Routing Key 前缀
-ROUTING_TEXT_PREFIX = "compliance.text"
-ROUTING_IMAGE_PREFIX = "compliance.image"
+    # API
+    api_port: int = 8000
 
-# Binding Key（Topic 模式通配符）
-BINDING_TEXT = "compliance.text.*"
-BINDING_IMAGE = "compliance.image.*"
+    # Exchange 名称
+    order_fulfillment_exchange: str = "order.fulfillment"
+    order_compliance_exchange: str = "order.compliance"
 
-# 模拟处理耗时（秒）
-SIMULATE_INVENTORY = 0.5
-SIMULATE_CUSTOMS = 3.0
-SIMULATE_NLP = 2.0
-SIMULATE_CV = 4.0
+    # Queue 名称
+    queue_inventory: str = "inventory_queue"
+    queue_customs: str = "customs_queue"
+    queue_nlp: str = "nlp_queue"
+    queue_cv: str = "cv_queue"
+
+    # Routing / Binding Key
+    routing_text_prefix: str = "compliance.text"
+    routing_image_prefix: str = "compliance.image"
+    binding_text: str = "compliance.text.*"
+    binding_image: str = "compliance.image.*"
+
+    # Dead Letter
+    dlx_name: str = "dead_letter_exchange"
+    dlx_queue: str = "dead_letter_queue"
+
+    # Retry
+    retry_exchange: str = "retry.exchange"
+    retry_queue: str = "retry_queue"
+    retry_ttl_ms: int = 5000
+
+    # Priority
+    max_priority: int = 10
+
+    # Simulation (seconds)
+    simulate_inventory: float = 0.5
+    simulate_customs: float = 3.0
+    simulate_nlp: float = 2.0
+    simulate_cv: float = 4.0
+
+    # Retry config
+    max_retries: int = 3
+
+    # Queue TTL (ms)
+    customs_ttl_ms: int = 8000
+
+    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+
+    @property
+    def queue_args_inventory(self) -> dict:
+        return {
+            "x-max-priority": self.max_priority,
+            "x-dead-letter-exchange": self.dlx_name,
+        }
+
+    @property
+    def queue_args_customs(self) -> dict:
+        return {
+            "x-message-ttl": self.customs_ttl_ms,
+            "x-dead-letter-exchange": self.dlx_name,
+        }
+
+    @property
+    def queue_args_nlp(self) -> dict:
+        return {"x-dead-letter-exchange": self.dlx_name}
+
+    @property
+    def queue_args_cv(self) -> dict:
+        return {"x-dead-letter-exchange": self.dlx_name}
+
+
+settings = Settings()
