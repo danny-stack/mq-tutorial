@@ -18,6 +18,9 @@ dependencies = [
 dev = [
     "ruff>=0.8",
 ]
+kafka = [
+    "aiokafka>=0.11",
+]
 
 [tool.ruff]
 target-version = "py311"
