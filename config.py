@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     # Retry config
     max_retries: int = 3
     max_priority: int = 10
+    retry_ttl_ms: int = 5000  # retry_queue 消息 TTL（.env: RETRY_TTL_MS）
+    customs_ttl_ms: int = 8000  # customs_queue 消息 TTL（.env: CUSTOMS_TTL_MS）
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

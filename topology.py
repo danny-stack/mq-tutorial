@@ -16,12 +16,14 @@
 
   dead_letter_exchange (fanout) ──→ dead_letter_queue       ← 所有死信汇聚
 
-  retry.exchange (direct) ──→ retry_queue [TTL=5s]         ← 重试缓冲
+  retry.exchange (fanout) ──→ retry_queue [TTL=5s]   ← 重试缓冲（回流 order.compliance）
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+
+from config import settings
 
 
 @dataclass(frozen=True)
@@ -72,10 +74,12 @@ EXCHANGES: list[ExchangeDef] = [
         desc="所有死信消息汇聚（rejected / expired / maxlen）",
     ),
     # --- 重试 Exchange ---
+    # fanout：消息携带的原 routing_key 会被保留，TTL 过期死信到 order.compliance(topic)
+    # 时仍能匹配 compliance.image.* / compliance.text.*，精确回流到 cv/nlp 队列。
     ExchangeDef(
         name="retry.exchange",
-        type="direct",
-        desc="重试缓冲（消息 TTL 过期后回到原业务 Exchange）",
+        type="fanout",
+        desc="重试缓冲（fanout，TTL 后死信回流到 order.compliance，仅服务 topic 队列）",
     ),
 ]
 
@@ -97,10 +101,10 @@ QUEUES: list[QueueDef] = [
     QueueDef(
         name="customs_queue",
         arguments={
-            "x-message-ttl": 8000,
+            "x-message-ttl": settings.customs_ttl_ms,
             "x-dead-letter-exchange": "dead_letter_exchange",
         },
-        desc="海关申报（TTL=8s，超时进死信）",
+        desc="海关申报（消息 TTL 超时进死信，见 settings.customs_ttl_ms）",
     ),
     QueueDef(
         name="nlp_queue",
@@ -122,13 +126,15 @@ QUEUES: list[QueueDef] = [
         desc="死信消息终端（告警服务消费）",
     ),
     # --- 重试队列 ---
+    # 故意不设 x-dead-letter-routing-key：死信时保留消息原 routing_key，
+    # 回到 order.compliance(topic) 后仍能匹配 compliance.image.* / compliance.text.*。
     QueueDef(
         name="retry_queue",
         arguments={
-            "x-message-ttl": 5000,
+            "x-message-ttl": settings.retry_ttl_ms,
             "x-dead-letter-exchange": "order.compliance",
         },
-        desc="重试缓冲（TTL=5s 后回到 order.compliance Exchange）",
+        desc="重试缓冲（TTL 后死信到 order.compliance，保留原 rk 回流到 cv/nlp 队列）",
     ),
 ]
 
@@ -168,12 +174,11 @@ BINDINGS: list[BindingDef] = [
         exchange="dead_letter_exchange",
         desc="所有死信汇聚到告警队列",
     ),
-    # --- Retry: retry.exchange → retry_queue ---
+    # --- Retry: retry.exchange → retry_queue（fanout，无需 routing_key）---
     BindingDef(
         queue="retry_queue",
         exchange="retry.exchange",
-        routing_key="cv_queue",
-        desc="CV 重试消息（以队列名做 routing key）",
+        desc="重试缓冲入口（fanout 广播到 retry_queue，rk 由 publish 时携带并在死信回流时复用）",
     ),
 ]
 

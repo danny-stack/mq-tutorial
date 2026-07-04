@@ -13,8 +13,8 @@ import time
 import aio_pika
 
 from config import settings
-from consumers import COLOR_RED, COLOR_YELLOW, setup_logging
-from topology import EXCHANGE_MAP, QUEUE_MAP
+from mq.consumer import setup_logging
+from topology import EXCHANGE_MAP, EXCHANGES, QUEUE_MAP, QUEUES
 
 s = settings
 logger = logging.getLogger("mq-tutorial")
@@ -42,6 +42,7 @@ def wait(seconds: float, desc: str = "") -> None:
 
 def cleanup_queues() -> None:
     """清空所有队列，避免场景间消息干扰"""
+
     async def _clean() -> None:
         conn = await aio_pika.connect_robust(s.amqp_url)
         async with conn:
@@ -52,21 +53,56 @@ def cleanup_queues() -> None:
                     await queue.purge()
                 except Exception:
                     pass
+
     asyncio.run(_clean())
+
+
+def check_topology() -> list[str]:
+    """被动检查（passive declare）拓扑是否已在 broker 上预配。
+
+    只验证存在性、**不创建任何资源**——生产实践要求拓扑由运维预配，
+    应用代码只 get 不 declare。返回缺失项列表（空 = 全部就绪）。
+    """
+
+    async def _check() -> list[str]:
+        missing: list[str] = []
+        conn = await aio_pika.connect_robust(s.amqp_url)
+        async with conn:
+            # 每个资源独立 channel：passive declare 命中 404 会关掉当前 channel
+            for ex in EXCHANGES:
+                ch = await conn.channel()
+                try:
+                    await ch.declare_exchange(ex.name, aio_pika.ExchangeType(ex.type), passive=True)
+                except Exception:
+                    missing.append(f"exchange:{ex.name}")
+                finally:
+                    await ch.close()
+            for q in QUEUES:
+                ch = await conn.channel()
+                try:
+                    await ch.declare_queue(q.name, passive=True)
+                except Exception:
+                    missing.append(f"queue:{q.name}")
+                finally:
+                    await ch.close()
+        return missing
+
+    return asyncio.run(_check())
 
 
 def main() -> None:
     setup_logging()
 
     print(f"\n{'=' * 65}")
-    print(f"  跨境电商异步消息枢纽 — 6 个生产级场景演示")
+    print("  跨境电商异步消息枢纽 — 6 个生产级场景演示")
     print(f"{'=' * 65}")
 
     # ── 启动 RabbitMQ ──────────────────────────────────────────
     print("\n[准备] 检查 RabbitMQ...")
     result = subprocess.run(
         ["docker", "compose", "ps", "-q"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     if not result.stdout.strip():
         print("  正在启动 RabbitMQ...")
@@ -75,9 +111,21 @@ def main() -> None:
     else:
         print("  RabbitMQ 已运行")
 
-    # ── 声明资源 ───────────────────────────────────────────────
-    print("  声明 Exchange / Queue / Binding...")
-    subprocess.run([sys.executable, "setup_exchanges.py"], check=True)
+    # ── 校验拓扑（不创建） ───────────────────────────────────────
+    # 生产实践：拓扑是基础设施，应由运维预配（面板 / definitions.json / IaC），
+    # 应用代码只 get_exchange/get_queue，不 declare。这里仅 passive 检查存在性，
+    # 缺失时打印指引并退出，由人去配。
+    print("  校验 RabbitMQ 拓扑（passive，不创建资源）...")
+    missing = check_topology()
+    if missing:
+        print(f"\n  ✗ 拓扑未就绪，缺失 {len(missing)} 项：{', '.join(missing)}")
+        print("\n  请先创建拓扑（三选一），完成后重跑：python run_demo.py")
+        print("    1) make setup          开发一键（等同 setup_exchanges.py）")
+        print("    2) 面板导入 definitions.json")
+        print("       http://localhost:15672 → Overview → Import definitions")
+        print("    3) 面板手动：照 README「拓扑清单」在 Exchanges/Queues/Bindings 逐个建")
+        sys.exit(1)
+    print("  拓扑就绪 ✓\n")
 
     # ── 启动 alert_service ─────────────────────────────────────
     alert_proc = run_bg([sys.executable, "services/alert_service.py"])
@@ -86,10 +134,7 @@ def main() -> None:
     # 从 topology 获取名称
     ex_fulfillment = EXCHANGE_MAP["order.fulfillment"].name
     ex_compliance = EXCHANGE_MAP["order.compliance"].name
-    q_inventory = QUEUE_MAP["inventory_queue"].name
-    q_customs = QUEUE_MAP["customs_queue"].name
     q_nlp = QUEUE_MAP["nlp_queue"].name
-    q_cv = QUEUE_MAP["cv_queue"].name
 
     # ════════════════════════════════════════════════════════════
     # 场景 1: 手动 ACK
@@ -104,12 +149,22 @@ def main() -> None:
         async with conn:
             ch = await conn.channel()
             ex = await ch.get_exchange(ex_compliance)
-            body = json.dumps({
-                "order_id": "S1-CRASH-001",
-                "customer": "测试用户",
-                "items": [{"name": "崩溃测试商品", "description": "测试", "quantity": 1, "price": "1.00"}],
-                "has_text": True, "has_image": False,
-            }).encode()
+            body = json.dumps(
+                {
+                    "order_id": "S1-CRASH-001",
+                    "customer": "测试用户",
+                    "items": [
+                        {
+                            "name": "崩溃测试商品",
+                            "description": "测试",
+                            "quantity": 1,
+                            "price": "1.00",
+                        }
+                    ],
+                    "has_text": True,
+                    "has_image": False,
+                }
+            ).encode()
             await ex.publish(
                 aio_pika.Message(body=body, delivery_mode=aio_pika.DeliveryMode.PERSISTENT),
                 routing_key=f"{s.routing_text_prefix}.S1-CRASH-001",
@@ -127,14 +182,16 @@ def main() -> None:
             "    async with q.iterator() as it:\n"
             "        async for msg in it:\n"
             "            body = json.loads(msg.body.decode())\n"
-            "            print(f'  [模拟崩溃] 收到订单 {body[\"order_id\"]}，处理到一半崩溃！不发送 ACK！')\n"
+            '            print(f\'  [模拟崩溃] 收到订单 {body["order_id"]}，'
+            "处理到一半崩溃！不发送 ACK！')\n"
             "            await conn.close()\n"
             "            return\n"
             "asyncio.run(main())\n"
         )
         crash_proc = subprocess.Popen(
             [sys.executable, "-c", crash_code],
-            stdout=sys.stdout, stderr=sys.stderr,
+            stdout=sys.stdout,
+            stderr=sys.stderr,
         )
         crash_proc.wait()
 
@@ -150,67 +207,60 @@ def main() -> None:
     section("结果：消息没有丢失！崩溃后消息重入队列，被新消费者正常处理。✓")
 
     # ════════════════════════════════════════════════════════════
-    # 场景 2: Dead Letter Queue
+    # 场景 2: Dead Letter Queue — 延迟重试 + 重试上限
     # ════════════════════════════════════════════════════════════
-    banner(2, "Dead Letter Queue — 重试上限保护")
+    banner(2, "Dead Letter Queue — 延迟重试 + 重试上限保护")
     section("问题：消费者反复失败，无限重试拖垮系统。")
-    section("方案：设置最大重试次数，超过后消息进入 Dead Letter Queue。\n")
+    section("方案：失败先延迟重试（retry.exchange + TTL 回流），超过 max_retries 后进 DLQ。\n")
     cleanup_queues()
+
+    section("启动 CV 消费者（100% 失败率 + 延迟重试）...")
+    cv_proc = run_bg([sys.executable, "services/cv_service.py", "1.0"])
+    wait(2, "等待 CV 消费者就绪")
+
+    section("发送 1 条图片消息到 CV 队列（retry_count=0）...")
 
     async def scenario2() -> None:
         conn = await aio_pika.connect_robust(s.amqp_url)
         async with conn:
             ch = await conn.channel()
             ex = await ch.get_exchange(ex_compliance)
-            body = json.dumps({
-                "order_id": "S2-FAIL-001",
-                "customer": "失败测试",
-                "items": [{"name": "无法处理商品", "description": "注定失败", "quantity": 1, "price": "1.00"}],
-                "has_text": False, "has_image": True,
-            }).encode()
-            for i in range(4):
-                await ex.publish(
-                    aio_pika.Message(
-                        body=body,
-                        delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
-                        headers={"x-retry-count": i},
-                    ),
-                    routing_key=f"{s.routing_image_prefix}.S2-FAIL-001-attempt{i}",
-                )
-        section("已发送 4 条消息到 CV 队列（retry_count 分别为 0,1,2,3）")
+            body = json.dumps(
+                {
+                    "order_id": "S2-FAIL-001",
+                    "customer": "失败测试",
+                    "items": [
+                        {
+                            "name": "无法处理商品",
+                            "description": "注定失败",
+                            "quantity": 1,
+                            "price": "1.00",
+                        }
+                    ],
+                    "has_text": False,
+                    "has_image": True,
+                }
+            ).encode()
+            await ex.publish(
+                aio_pika.Message(
+                    body=body,
+                    delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                    headers={"x-retry-count": 0},
+                ),
+                routing_key=f"{s.routing_image_prefix}.S2-FAIL-001",
+            )
 
     asyncio.run(scenario2())
 
-    section("启动 CV 消费者（100% 失败率）...")
-    cv_fail_code = (
-        "import asyncio, json, aio_pika\n"
-        "async def main():\n"
-        "    conn = await aio_pika.connect_robust('amqp://guest:guest@localhost/')\n"
-        "    ch = await conn.channel()\n"
-        "    await ch.set_qos(prefetch_count=1)\n"
-        f"    q = await ch.get_queue('{q_cv}')\n"
-        "    async with q.iterator() as it:\n"
-        "        async for msg in it:\n"
-        "            body = json.loads(msg.body.decode())\n"
-        "            rc = int(msg.headers.get('x-retry-count', 0)) if msg.headers else 0\n"
-        "            oid = body.get('order_id', '?')\n"
-        f"            if rc < {s.max_retries}:\n"
-        "                print(f'  [CV] 订单 {oid} 处理失败 (retry={rc}) → reject → 进入 DLX')\n"
-        "            else:\n"
-        "                print(f'  [CV] 订单 {oid} 重试已达上限 (retry={rc}) → reject → 最终进入 DLX')\n"
-        "            await msg.reject(requeue=False)\n"
-        "    await conn.close()\n"
-        "asyncio.run(main())\n"
+    section("观察延迟重试链路：失败 → retry.exchange → 回流 → 再失败 → ... → DLQ")
+    wait(
+        s.max_retries * s.retry_ttl_ms / 1000 + 6,
+        f"等待 {s.max_retries} 次延迟重试（每次 {s.retry_ttl_ms}ms）后进 DLQ",
     )
-    cv_proc = subprocess.Popen(
-        [sys.executable, "-c", cv_fail_code],
-        stdout=sys.stdout, stderr=sys.stderr,
-    )
-    wait(5, "等待所有消息被处理并进入 DLX")
     cv_proc.terminate()
 
     wait(2, "等待 alert_service 消费死信")
-    section("结果：超过重试上限的消息全部进入死信队列，alert_service 发出告警。✓")
+    section("结果：消息经延迟重试 max_retries 次仍失败，最终进入死信队列。✓")
 
     # ════════════════════════════════════════════════════════════
     # 场景 3: Competing Consumers
@@ -226,21 +276,25 @@ def main() -> None:
     wait(2, "等待 Worker 就绪")
 
     section("发送 10 笔订单到库存队列...")
+
     async def scenario3() -> None:
         conn = await aio_pika.connect_robust(s.amqp_url)
         async with conn:
             ch = await conn.channel()
             ex = await ch.get_exchange(ex_fulfillment)
             for i in range(10):
-                body = json.dumps({
-                    "order_id": f"S3-LOAD-{i + 1:03d}",
-                    "customer": f"客户{i + 1}",
-                    "items": [{"name": f"商品{i + 1}", "quantity": 1, "price": "10.00"}],
-                }).encode()
+                body = json.dumps(
+                    {
+                        "order_id": f"S3-LOAD-{i + 1:03d}",
+                        "customer": f"客户{i + 1}",
+                        "items": [{"name": f"商品{i + 1}", "quantity": 1, "price": "10.00"}],
+                    }
+                ).encode()
                 await ex.publish(
                     aio_pika.Message(body=body, delivery_mode=aio_pika.DeliveryMode.PERSISTENT),
                     routing_key="",
                 )
+
     asyncio.run(scenario3())
 
     wait(8, "等待两个 Worker 分摊处理 10 条消息")
@@ -264,11 +318,13 @@ def main() -> None:
             ch = await conn.channel()
             ex = await ch.get_exchange(ex_fulfillment)
             for i in range(5):
-                body = json.dumps({
-                    "order_id": f"S4-NORMAL-{i + 1:03d}",
-                    "customer": f"普通客户{i + 1}",
-                    "items": [{"name": f"普通商品{i + 1}", "quantity": 1, "price": "10.00"}],
-                }).encode()
+                body = json.dumps(
+                    {
+                        "order_id": f"S4-NORMAL-{i + 1:03d}",
+                        "customer": f"普通客户{i + 1}",
+                        "items": [{"name": f"普通商品{i + 1}", "quantity": 1, "price": "10.00"}],
+                    }
+                ).encode()
                 await ex.publish(
                     aio_pika.Message(
                         body=body,
@@ -277,11 +333,13 @@ def main() -> None:
                     ),
                     routing_key="",
                 )
-            vip_body = json.dumps({
-                "order_id": "S4-VIP-001",
-                "customer": "VIP 张三",
-                "items": [{"name": "VIP 限量商品", "quantity": 1, "price": "9999.00"}],
-            }).encode()
+            vip_body = json.dumps(
+                {
+                    "order_id": "S4-VIP-001",
+                    "customer": "VIP 张三",
+                    "items": [{"name": "VIP 限量商品", "quantity": 1, "price": "9999.00"}],
+                }
+            ).encode()
             await ex.publish(
                 aio_pika.Message(
                     body=vip_body,
@@ -313,22 +371,26 @@ def main() -> None:
     wait(2, "等待就绪")
 
     section("发送同一订单 S5-DUP-001 两次...")
+
     async def scenario5() -> None:
         conn = await aio_pika.connect_robust(s.amqp_url)
         async with conn:
             ch = await conn.channel()
             ex = await ch.get_exchange(ex_fulfillment)
-            body = json.dumps({
-                "order_id": "S5-DUP-001",
-                "customer": "重复测试",
-                "items": [{"name": "去重测试商品", "quantity": 2, "price": "100.00"}],
-            }).encode()
+            body = json.dumps(
+                {
+                    "order_id": "S5-DUP-001",
+                    "customer": "重复测试",
+                    "items": [{"name": "去重测试商品", "quantity": 2, "price": "100.00"}],
+                }
+            ).encode()
             for i in range(2):
                 await ex.publish(
                     aio_pika.Message(body=body, delivery_mode=aio_pika.DeliveryMode.PERSISTENT),
                     routing_key="",
                 )
                 section(f"  第 {i + 1} 次发送 S5-DUP-001")
+
     asyncio.run(scenario5())
 
     wait(3, "等待消费者处理")
@@ -351,15 +413,18 @@ def main() -> None:
         async with conn:
             ch = await conn.channel()
             ex = await ch.get_exchange(ex_fulfillment)
-            body = json.dumps({
-                "order_id": "S6-TTL-001",
-                "customer": "超时测试",
-                "items": [{"name": "过期测试商品", "quantity": 1, "price": "1.00"}],
-            }).encode()
+            body = json.dumps(
+                {
+                    "order_id": "S6-TTL-001",
+                    "customer": "超时测试",
+                    "items": [{"name": "过期测试商品", "quantity": 1, "price": "1.00"}],
+                }
+            ).encode()
             await ex.publish(
                 aio_pika.Message(body=body, delivery_mode=aio_pika.DeliveryMode.PERSISTENT),
                 routing_key="",
             )
+
     asyncio.run(scenario6())
 
     section("订单 S6-TTL-001 已发送到 customs_queue (TTL=8s)")
@@ -370,7 +435,7 @@ def main() -> None:
 
     # ── 清理 ────────────────────────────────────────────────────
     print(f"\n{'=' * 65}")
-    print(f"  全部 6 个场景演示完成")
+    print("  全部 6 个场景演示完成")
     print(f"{'=' * 65}\n")
     print("  总结：")
     print("    场景 1: 手动 ACK     → 崩溃不丢消息，重入队列重新消费")

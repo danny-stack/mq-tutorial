@@ -33,6 +33,7 @@ async def main() -> None:
         process_fn=process,
         simulate_seconds=settings.simulate_nlp,
         idempotent=True,
+        retry_exchange_name="retry.exchange",
     )
 
 

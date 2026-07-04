@@ -11,13 +11,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import time
 from contextlib import asynccontextmanager
-from typing import Optional
 
 import aio_pika
 from fastapi import FastAPI, HTTPException, Query
 
 from config import settings
 from models import SAMPLE_ORDERS, Order, PaymentResult
+from mq.publisher import Publisher, PublishError
 from topology import EXCHANGE_MAP
 
 s = settings
@@ -25,11 +25,15 @@ s = settings
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    app.state.amqp_connection = await aio_pika.connect_robust(s.amqp_url)
-    app.state.amqp_channel = await app.state.amqp_connection.channel()
-    print("[Payment Service] 已连接 RabbitMQ")
+    conn = await aio_pika.connect_robust(s.amqp_url)
+    publisher = Publisher(conn)
+    await publisher.connect()  # 启用 publisher_confirms + on_return_raises
+    app.state.amqp_connection = conn
+    app.state.publisher = publisher
+    print("[Payment Service] 已连接 RabbitMQ（publisher_confirms + mandatory 已启用）")
     yield
-    await app.state.amqp_connection.close()
+    await publisher.close()
+    await conn.close()
     print("[Payment Service] 已断开 RabbitMQ")
 
 
@@ -38,13 +42,24 @@ app = FastAPI(title="跨境电商支付服务（生产级）", lifespan=lifespan
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    """liveness：进程存活；AMQP 连接断开时返 503。"""
+    if app.state.amqp_connection.is_closed:
+        raise HTTPException(status_code=503, detail="AMQP 连接已断开")
+    return {"status": "ok", "amqp_connected": True}
+
+
+@app.get("/ready")
+async def ready():
+    """readiness：Publisher channel 未就绪时返 503，不放流量进来。"""
+    if not app.state.publisher.is_ready:
+        raise HTTPException(status_code=503, detail="Publisher channel 未就绪")
+    return {"status": "ready", "publisher_confirms": True}
 
 
 @app.post("/orders/{order_id}/pay", response_model=PaymentResult)
 async def pay_order(
     order_id: str,
-    priority: Optional[int] = Query(default=None, ge=0, le=s.max_priority),
+    priority: int | None = Query(default=None, ge=0, le=s.max_priority),
 ):
     order = next((o for o in SAMPLE_ORDERS if o.order_id == order_id), None)
     if order is None:
@@ -57,7 +72,7 @@ async def pay_order(
         )
     order.compute_total()
 
-    channel: aio_pika.Channel = app.state.amqp_channel
+    publisher: Publisher = app.state.publisher
     published_to: list[str] = []
     t0 = time.perf_counter()
 
@@ -70,36 +85,38 @@ async def pay_order(
         if priority is not None:
             msg_kwargs["priority"] = priority
 
-        # Fanout: order.fulfillment
-        fanout_ex = await channel.get_exchange(EXCHANGE_MAP["order.fulfillment"].name)
-        await fanout_ex.publish(
-            aio_pika.Message(body=order.model_dump_json().encode(), **msg_kwargs),
+        # Fanout: order.fulfillment（mandatory 默认 True，不可路由会抛 PublishError）
+        await publisher.publish(
+            EXCHANGE_MAP["order.fulfillment"].name,
             routing_key="",
+            message=aio_pika.Message(body=order.model_dump_json().encode(), **msg_kwargs),
         )
         published_to.extend(["inventory_queue", "customs_queue"])
 
-        # Topic: order.compliance
-        topic_ex = await channel.get_exchange(EXCHANGE_MAP["order.compliance"].name)
+        # Topic: order.compliance（按内容类型路由到 nlp/cv）
+        topic_name = EXCHANGE_MAP["order.compliance"].name
         body = order.model_dump_json().encode()
 
         if order.has_text:
             rk = f"{s.routing_text_prefix}.{order_id}"
-            await topic_ex.publish(
-                aio_pika.Message(body=body, **msg_kwargs),
+            await publisher.publish(
+                topic_name,
                 routing_key=rk,
+                message=aio_pika.Message(body=body, **msg_kwargs),
             )
             published_to.append(f"nlp_queue (key={rk})")
 
         if order.has_image:
             rk = f"{s.routing_image_prefix}.{order_id}"
-            await topic_ex.publish(
-                aio_pika.Message(body=body, **msg_kwargs),
+            await publisher.publish(
+                topic_name,
                 routing_key=rk,
+                message=aio_pika.Message(body=body, **msg_kwargs),
             )
             published_to.append(f"cv_queue (key={rk})")
 
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"消息发布失败: {e}")
+    except PublishError as e:
+        raise HTTPException(status_code=503, detail=f"消息发布失败: {e}") from e
 
     elapsed_ms = (time.perf_counter() - t0) * 1000
     return PaymentResult(

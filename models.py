@@ -1,8 +1,7 @@
 """数据模型：订单、商品、支付结果"""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -10,7 +9,7 @@ from pydantic import BaseModel, Field
 class OrderItem(BaseModel):
     name: str
     description: str = ""
-    image_url: Optional[str] = None
+    image_url: str | None = None
     quantity: int = 1
     price: Decimal = Field(default=Decimal("0"), ge=0)
 
@@ -22,14 +21,10 @@ class Order(BaseModel):
     has_text: bool = True
     has_image: bool = True
     total_amount: Decimal = Field(default=Decimal("0"), ge=0)
-    timestamp: str = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
+    timestamp: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
 
     def compute_total(self) -> Decimal:
-        self.total_amount = sum(
-            item.price * item.quantity for item in self.items
-        )
+        self.total_amount = sum(item.price * item.quantity for item in self.items)
         return self.total_amount
 
 

@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import aio_pika
 
 from config import settings
-from mq.consumer import COLOR_RED, COLOR_CYAN, _colorize, setup_logging
+from mq.consumer import COLOR_CYAN, COLOR_RED, _colorize, setup_logging
 from topology import QUEUE_MAP
 
 REASON_MAP = {
@@ -27,6 +27,7 @@ REASON_MAP = {
 async def main() -> None:
     setup_logging()
     import logging
+
     logger = logging.getLogger("mq-tutorial")
 
     logger.info("%s 正在连接 RabbitMQ，监听死信队列...", _colorize("告警", COLOR_RED))
@@ -38,7 +39,8 @@ async def main() -> None:
 
         logger.info(
             "%s 已就绪，监听 [%s]（所有死信消息汇聚于此）",
-            _colorize("告警", COLOR_RED), QUEUE_MAP["dead_letter_queue"].name,
+            _colorize("告警", COLOR_RED),
+            QUEUE_MAP["dead_letter_queue"].name,
         )
 
         async with queue.iterator() as queue_iter:
@@ -59,7 +61,9 @@ async def main() -> None:
                     logger.warning(
                         "%s 死信消息 | 订单 %s | 来源: %s | 原因: %s",
                         _colorize("告警", COLOR_RED),
-                        order_id, original_queue, reason_desc,
+                        order_id,
+                        original_queue,
+                        reason_desc,
                     )
                     logger.info(
                         "%s → 模拟发送告警通知（钉钉/邮件/SMS）",
