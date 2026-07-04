@@ -1,0 +1,153 @@
+{
+  "rabbit_version": "3.13",
+  "vhosts": [
+    {
+      "name": "/"
+    }
+  ],
+  "exchanges": [
+    {
+      "name": "order.fulfillment",
+      "vhost": "/",
+      "type": "fanout",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    },
+    {
+      "name": "order.compliance",
+      "vhost": "/",
+      "type": "topic",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    },
+    {
+      "name": "dead_letter_exchange",
+      "vhost": "/",
+      "type": "fanout",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    },
+    {
+      "name": "retry.exchange",
+      "vhost": "/",
+      "type": "fanout",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    }
+  ],
+  "queues": [
+    {
+      "name": "inventory_queue",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-max-priority": 10,
+        "x-dead-letter-exchange": "dead_letter_exchange"
+      }
+    },
+    {
+      "name": "customs_queue",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-message-ttl": 8000,
+        "x-dead-letter-exchange": "dead_letter_exchange"
+      }
+    },
+    {
+      "name": "nlp_queue",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "dead_letter_exchange"
+      }
+    },
+    {
+      "name": "cv_queue",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "dead_letter_exchange"
+      }
+    },
+    {
+      "name": "dead_letter_queue",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    },
+    {
+      "name": "retry_queue",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-message-ttl": 5000,
+        "x-dead-letter-exchange": "order.compliance"
+      }
+    }
+  ],
+  "bindings": [
+    {
+      "source": "order.fulfillment",
+      "vhost": "/",
+      "destination": "inventory_queue",
+      "destination_type": "queue",
+      "routing_key": "",
+      "arguments": {}
+    },
+    {
+      "source": "order.fulfillment",
+      "vhost": "/",
+      "destination": "customs_queue",
+      "destination_type": "queue",
+      "routing_key": "",
+      "arguments": {}
+    },
+    {
+      "source": "order.compliance",
+      "vhost": "/",
+      "destination": "nlp_queue",
+      "destination_type": "queue",
+      "routing_key": "compliance.text.*",
+      "arguments": {}
+    },
+    {
+      "source": "order.compliance",
+      "vhost": "/",
+      "destination": "cv_queue",
+      "destination_type": "queue",
+      "routing_key": "compliance.image.*",
+      "arguments": {}
+    },
+    {
+      "source": "dead_letter_exchange",
+      "vhost": "/",
+      "destination": "dead_letter_queue",
+      "destination_type": "queue",
+      "routing_key": "",
+      "arguments": {}
+    },
+    {
+      "source": "retry.exchange",
+      "vhost": "/",
+      "destination": "retry_queue",
+      "destination_type": "queue",
+      "routing_key": "",
+      "arguments": {}
+    }
+  ]
+}

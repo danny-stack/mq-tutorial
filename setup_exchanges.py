@@ -1,6 +1,14 @@
-"""根据 topology.py 的声明式定义，在 RabbitMQ 中创建所有资源
+"""开发/教学用：根据 topology.py 在 RabbitMQ 中创建所有资源
 
-运行方式：python setup_exchanges.py
+⚠️ 定位：这是**开发期一次性初始化工具**，仅本地/教学环境使用。
+生产环境不要用应用代码 declare 拓扑——拓扑是基础设施，应由运维预配：
+  - 管理面板手动配（Exchanges / Queues / Bindings 页签），或
+  - 导入 definitions.json（面板 Overview → Import definitions，见项目根文件），或
+  - IaC（Terraform rabbitmq provider / broker 启动时加载 definitions 文件）
+应用进程只 get_exchange / get_queue，通常没有 declare 权限。
+
+run_demo.py 不再自动调用本脚本——改为启动时被动校验拓扑存在性，
+缺失时指引你去配。开发期想一键建：python setup_exchanges.py（或 make setup）。
 """
 
 import asyncio
@@ -9,7 +17,7 @@ import sys
 import aio_pika
 
 from config import settings
-from topology import BINDINGS, EXCHANGE_MAP, EXCHANGES, QUEUE_MAP, QUEUES
+from topology import BINDINGS, EXCHANGES, QUEUES
 
 
 async def setup() -> None:
