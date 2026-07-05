@@ -25,6 +25,15 @@
       "arguments": {}
     },
     {
+      "name": "order.status",
+      "vhost": "/",
+      "type": "direct",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    },
+    {
       "name": "dead_letter_exchange",
       "vhost": "/",
       "type": "fanout",
@@ -75,6 +84,24 @@
     },
     {
       "name": "cv_queue",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "dead_letter_exchange"
+      }
+    },
+    {
+      "name": "notification_queue",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "dead_letter_exchange"
+      }
+    },
+    {
+      "name": "audit_queue",
       "vhost": "/",
       "durable": true,
       "auto_delete": false,
@@ -147,6 +174,22 @@
       "destination": "retry_queue",
       "destination_type": "queue",
       "routing_key": "",
+      "arguments": {}
+    },
+    {
+      "source": "order.status",
+      "vhost": "/",
+      "destination": "notification_queue",
+      "destination_type": "queue",
+      "routing_key": "order.paid",
+      "arguments": {}
+    },
+    {
+      "source": "order.status",
+      "vhost": "/",
+      "destination": "audit_queue",
+      "destination_type": "queue",
+      "routing_key": "order.paid",
       "arguments": {}
     }
   ]

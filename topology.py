@@ -67,6 +67,12 @@ EXCHANGES: list[ExchangeDef] = [
         type="topic",
         desc="合规审查路由（NLP + CV，按内容类型分发）",
     ),
+    # --- 状态变更 Direct Exchange ---
+    ExchangeDef(
+        name="order.status",
+        type="direct",
+        desc="订单状态变更（精确路由：例如 order.paid 仅通知/审计服务）",
+    ),
     # --- 死信 Exchange ---
     ExchangeDef(
         name="dead_letter_exchange",
@@ -120,6 +126,21 @@ QUEUES: list[QueueDef] = [
         },
         desc="CV 图片合规审查（随机失败 + 重试演示）",
     ),
+    # --- 状态通知队列（direct exchange） ---
+    QueueDef(
+        name="notification_queue",
+        arguments={
+            "x-dead-letter-exchange": "dead_letter_exchange",
+        },
+        desc="支付成功通知（监听 order.status / order.paid）",
+    ),
+    QueueDef(
+        name="audit_queue",
+        arguments={
+            "x-dead-letter-exchange": "dead_letter_exchange",
+        },
+        desc="支付成功审计日志（监听 order.status / order.paid）",
+    ),
     # --- 死信队列 ---
     QueueDef(
         name="dead_letter_queue",
@@ -167,6 +188,19 @@ BINDINGS: list[BindingDef] = [
         exchange="order.compliance",
         routing_key="compliance.image.*",
         desc="图片类内容路由到 CV 服务",
+    ),
+    # --- Direct: order.status → 通知 + 审计（同一 routing_key 可绑定多个队列） ---
+    BindingDef(
+        queue="notification_queue",
+        exchange="order.status",
+        routing_key="order.paid",
+        desc="支付成功时发送通知",
+    ),
+    BindingDef(
+        queue="audit_queue",
+        exchange="order.status",
+        routing_key="order.paid",
+        desc="支付成功时记录审计日志",
     ),
     # --- DLX: dead_letter_exchange → dead_letter_queue ---
     BindingDef(

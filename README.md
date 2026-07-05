@@ -30,6 +30,9 @@ order.compliance ───┤
    [Topic]          └─ cv_queue ────────── [Worker]
                         失败 → retry → 重试3次 → DLX
 
+order.status ───────┬─ notification_queue ─ [通知服务]    ← Direct 精确路由
+   [Direct]         └─ audit_queue ──────── [审计服务]    ← key=order.paid
+
 dead_letter_queue ────── [告警服务]  ← 所有失败/过期的消息最终汇聚于此
 ```
 
@@ -63,7 +66,7 @@ docker compose up -d
 - **② 面板导入**（推荐，最省事）：浏览器打开 http://localhost:15672（guest/guest）→ 下方 `Import definitions` → 选项目根的 [`definitions.json`](./definitions.json) → 导入，全部资源一键就绪。
 - **③ 面板手动**：照下方「[拓扑清单](#拓扑清单手动配置参考)」在 `Exchanges` / `Queues` / `Bindings` 页签逐个建。
 
-### 4. 一键演示（6 个生产级场景）
+### 4. 一键演示（7 个生产级场景）
 
 ```bash
 python run_demo.py
@@ -77,7 +80,7 @@ python run_demo.py
 
 ---
 
-## 6 个生产级场景详解
+## 7 个生产级场景详解
 
 ### 场景 1: 手动 ACK — 消费者崩溃不丢消息
 
@@ -155,6 +158,19 @@ python run_demo.py
     → 转发到 DLX → 告警服务发出通知
 ```
 
+### 场景 7: Direct Exchange — 精确路由
+
+**问题**：支付成功后，只想让"通知服务"和"审计服务"收到消息，而不是广播给所有下游。
+
+**方案**：direct exchange + 精确 routing_key。生产者发送 `routing_key=order.paid` 的消息到 `order.status`，只有 binding key 完全匹配的队列（`notification_queue`、`audit_queue`）能收到。
+
+```
+支付成功 → order.status(direct) ──┬─ key=order.paid → notification_queue → 发送通知
+                                  └─ key=order.paid → audit_queue        → 记录审计日志
+```
+
+> 与 fanout 的区别：fanout 是"所有绑定队列都收"；direct 是"只有 binding key 完全匹配的队列才收"。同一个 routing key 可以绑定多个队列，实现"精确的一对多"。
+
 ---
 
 ## 分步教程
@@ -165,18 +181,20 @@ python run_demo.py
 # 终端 0: 创建拓扑（也可面板导入 definitions.json，见「拓扑清单」）
 python setup_exchanges.py   # 或 make setup
 
-# 终端 1-6: 启动消费者
+# 终端 1-8: 启动消费者
 python services/inventory_service.py          # 库存 (Fanout, Priority)
 python services/inventory_service.py 2        # 库存 Worker 2 (Competing Consumers)
 python services/customs_service.py            # 海关 (Fanout, TTL)
 python services/nlp_service.py                # NLP (Topic)
 python services/cv_service.py                 # CV (Topic, 可随机失败)
+python services/notification_service.py       # 通知 (Direct)
+python services/audit_service.py              # 审计 (Direct)
 python services/alert_service.py              # 死信告警
 
-# 终端 7: 启动 FastAPI
+# 终端 9: 启动 FastAPI
 uvicorn services.payment_service:app --port 8000
 
-# 终端 7: 触发支付
+# 终端 10: 触发支付
 curl -X POST http://localhost:8000/orders/CN-20260524-001/pay | python -m json.tool
 ```
 
@@ -206,6 +224,7 @@ curl -X POST "http://localhost:8000/orders/batch?count=10"
 |------|------|------|
 | `order.fulfillment` | fanout | 订单履约广播（库存 + 海关） |
 | `order.compliance` | topic | 合规审查路由（NLP + CV，按内容类型分发） |
+| `order.status` | direct | 订单状态变更（例如 `order.paid` 精确路由到通知/审计） |
 | `dead_letter_exchange` | fanout | 死信汇聚 |
 | `retry.exchange` | fanout | 重试缓冲（TTL 后死信回流 `order.compliance`） |
 
@@ -217,6 +236,8 @@ curl -X POST "http://localhost:8000/orders/batch?count=10"
 | `customs_queue` | `x-message-ttl=8000`, `x-dead-letter-exchange=dead_letter_exchange` | 海关（TTL） |
 | `nlp_queue` | `x-dead-letter-exchange=dead_letter_exchange` | NLP 文本审查 |
 | `cv_queue` | `x-dead-letter-exchange=dead_letter_exchange` | CV 图片审查 |
+| `notification_queue` | `x-dead-letter-exchange=dead_letter_exchange` | 支付成功通知（Direct） |
+| `audit_queue` | `x-dead-letter-exchange=dead_letter_exchange` | 支付成功审计日志（Direct） |
 | `dead_letter_queue` | — | 死信终端（告警服务消费） |
 | `retry_queue` | `x-message-ttl=5000`, `x-dead-letter-exchange=order.compliance` | 重试缓冲（**不设** DL routing_key，保留原 rk 回流 cv/nlp） |
 
@@ -230,6 +251,8 @@ curl -X POST "http://localhost:8000/orders/batch?count=10"
 | `order.compliance` → `cv_queue` | `compliance.image.*` |
 | `dead_letter_exchange` → `dead_letter_queue` | *(fanout，留空)* |
 | `retry.exchange` → `retry_queue` | *(fanout，留空)* |
+| `order.status` → `notification_queue` | `order.paid` |
+| `order.status` → `audit_queue` | `order.paid` |
 
 > **生产推荐**：把 `definitions.json` 挂载为 broker 的 [definitions file](https://www.rabbitmq.com/definitions.html)（或用 Terraform `rabbitmq_*` 资源），broker 启动即自带拓扑，完全脱离应用代码。
 > 注意：改 `topology.py` 后需同步重新导出/改 `definitions.json`（尤其 TTL、priority 等参数值）。
@@ -238,12 +261,12 @@ curl -X POST "http://localhost:8000/orders/batch?count=10"
 
 ## Exchange 对比
 
-| 特性 | Fanout Exchange | Topic Exchange |
-|------|----------------|----------------|
-| 路由方式 | 广播到所有绑定队列 | 根据 routing key 通配符匹配 |
-| Routing Key | 忽略 | 支持 `*`（一个词）和 `#`（零或多个词） |
-| 适用场景 | 同一事件需通知所有下游 | 根据内容类型精准分发 |
-| 本教程用途 | 库存 + 海关（都要处理每笔订单） | NLP + CV（按内容类型分别路由） |
+| 特性 | Fanout Exchange | Direct Exchange | Topic Exchange |
+|------|----------------|-----------------|----------------|
+| 路由方式 | 广播到所有绑定队列 | 精确匹配 routing key | 根据 routing key 通配符匹配 |
+| Routing Key | 忽略 | 必须完全一致 | 支持 `*`（一个词）和 `#`（零或多个词） |
+| 适用场景 | 同一事件需通知所有下游 | 精确事件类型路由 | 根据内容类型精准分发 |
+| 本教程用途 | 库存 + 海关（都要处理每笔订单） | 通知 + 审计（仅处理 `order.paid`） | NLP + CV（按内容类型分别路由） |
 
 ## 项目结构
 
@@ -261,11 +284,13 @@ curl -X POST "http://localhost:8000/orders/batch?count=10"
 ├── mq/
 │   └── consumer.py           # 消费者框架（手动ACK/重试/幂等）
 └── services/
-    ├── payment_service.py    # FastAPI 发布者（priority + batch）
+    ├── payment_service.py    # FastAPI 发布者（priority + batch + direct 状态事件）
     ├── inventory_service.py  # 库存消费者 (Fanout, Priority)
     ├── customs_service.py    # 海关消费者 (Fanout, TTL)
     ├── nlp_service.py        # NLP 消费者 (Topic)
     ├── cv_service.py         # CV 消费者 (Topic, 随机失败)
+    ├── notification_service.py  # 通知消费者 (Direct)
+    ├── audit_service.py      # 审计消费者 (Direct)
     └── alert_service.py      # 死信告警服务 (DLX)
 ```
 

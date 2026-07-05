@@ -115,6 +115,14 @@ async def pay_order(
             )
             published_to.append(f"cv_queue (key={rk})")
 
+        # Direct: order.status（精确路由：只有 binding key=order.paid 的队列能收到）
+        await publisher.publish(
+            EXCHANGE_MAP["order.status"].name,
+            routing_key="order.paid",
+            message=aio_pika.Message(body=order.model_dump_json().encode(), **msg_kwargs),
+        )
+        published_to.extend(["notification_queue (key=order.paid)", "audit_queue (key=order.paid)"])
+
     except PublishError as e:
         raise HTTPException(status_code=503, detail=f"消息发布失败: {e}") from e
 

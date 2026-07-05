@@ -1,4 +1,4 @@
-"""一键演示：6 个生产级场景
+"""一键演示：7 个生产级场景
 
 运行：python run_demo.py
 """
@@ -94,7 +94,7 @@ def main() -> None:
     setup_logging()
 
     print(f"\n{'=' * 65}")
-    print("  跨境电商异步消息枢纽 — 6 个生产级场景演示")
+    print("  跨境电商异步消息枢纽 — 7 个生产级场景演示")
     print(f"{'=' * 65}")
 
     # ── 启动 RabbitMQ ──────────────────────────────────────────
@@ -134,6 +134,7 @@ def main() -> None:
     # 从 topology 获取名称
     ex_fulfillment = EXCHANGE_MAP["order.fulfillment"].name
     ex_compliance = EXCHANGE_MAP["order.compliance"].name
+    ex_status = EXCHANGE_MAP["order.status"].name
     q_nlp = QUEUE_MAP["nlp_queue"].name
 
     # ════════════════════════════════════════════════════════════
@@ -433,9 +434,50 @@ def main() -> None:
     wait(2, "等待 alert_service 消费死信")
     section("结果：消息在 8s 后自动过期，进入死信队列，alert_service 发出告警。✓")
 
+    # ════════════════════════════════════════════════════════════
+    # 场景 7: Direct Exchange — 精确路由
+    # ════════════════════════════════════════════════════════════
+    banner(7, "Direct Exchange — 精确路由")
+    section("问题：支付成功后，只想让'通知服务'和'审计服务'收到消息，而不是所有下游。")
+    section("方案：direct exchange + 精确 routing_key='order.paid'，")
+    section("        只有绑定该 key 的队列能收到。\n")
+    cleanup_queues()
+
+    section("启动通知服务和审计服务...")
+    notif_proc = run_bg([sys.executable, "services/notification_service.py"])
+    audit_proc = run_bg([sys.executable, "services/audit_service.py"])
+    wait(2, "等待两个 Direct 消费者就绪")
+
+    section("发送 1 条 routing_key='order.paid' 的消息到 order.status...")
+
+    async def scenario7() -> None:
+        conn = await aio_pika.connect_robust(s.amqp_url)
+        async with conn:
+            ch = await conn.channel()
+            ex = await ch.get_exchange(ex_status)
+            body = json.dumps(
+                {
+                    "order_id": "S7-DIRECT-001",
+                    "customer": "精确路由测试",
+                    "total": "199.00",
+                    "items": [{"name": "Direct 测试商品", "quantity": 1, "price": "199.00"}],
+                }
+            ).encode()
+            await ex.publish(
+                aio_pika.Message(body=body, delivery_mode=aio_pika.DeliveryMode.PERSISTENT),
+                routing_key="order.paid",
+            )
+
+    asyncio.run(scenario7())
+
+    wait(3, "等待通知队列和审计队列都收到消息")
+    notif_proc.terminate()
+    audit_proc.terminate()
+    section("结果：同一条 order.paid 消息精确路由到了 notification_queue 和 audit_queue。✓")
+
     # ── 清理 ────────────────────────────────────────────────────
     print(f"\n{'=' * 65}")
-    print("  全部 6 个场景演示完成")
+    print("  全部 7 个场景演示完成")
     print(f"{'=' * 65}\n")
     print("  总结：")
     print("    场景 1: 手动 ACK     → 崩溃不丢消息，重入队列重新消费")
@@ -444,6 +486,7 @@ def main() -> None:
     print("    场景 4: Priority      → VIP 订单插队，高优先级先处理")
     print("    场景 5: 幂等消费      → 重复消息去重，防止重复扣库存")
     print("    场景 6: Message TTL   → 超时自动过期，避免消息无限堆积")
+    print("    场景 7: Direct       → 精确路由，状态事件按需投递")
     print()
     print("  管理面板: http://localhost:15672 (guest/guest)")
     print()
