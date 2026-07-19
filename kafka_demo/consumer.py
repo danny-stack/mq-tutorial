@@ -1,4 +1,4 @@
-"""消费者：从 competitors.stg 消费 → 组装 competitors_stg 行 → 模拟 INSERT
+"""消费者：从 topic `dss.competitors` 消费 → 组装 PG 表 competitors_stg 的行 → 模拟 INSERT
 
 跑：
   python -m kafka_demo.consumer              # 持续消费

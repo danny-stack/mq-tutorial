@@ -12,7 +12,9 @@ import logging
 
 # 本地 Kafka（docker-compose.kafka.yml 起的，宿主机走 HOST listener 29092）
 BOOTSTRAP_SERVERS = "localhost:29092"
-TOPIC = "competitors.stg"  # 模拟上游推竞品数据的 topic
+# topic 命名对齐团队约定（参照 pp.maps）：<来源系统>.<实体>，全小写点分隔。
+# 注意别和 PG 缓冲表 competitors_stg（下划线）搞混：topic 是数据流，表是落库终点。
+TOPIC = "dss.competitors"  # 模拟上游 DSS 系统推竞品数据的同步流
 CONSUMER_GROUP = "competitors-stg-loader"
 
 # competitors_stg 的 33 列（与 ai-x-backbone processing.py 的 STG_COLUMNS 对齐）

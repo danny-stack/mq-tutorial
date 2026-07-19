@@ -272,6 +272,7 @@ curl -X POST "http://localhost:8000/orders/batch?count=10"
 
 ```
 ├── docker-compose.yml        # RabbitMQ 服务
+├── docker-compose.kafka.yml  # Kafka 学习环境（独立于 RabbitMQ，见 docs/kafka-demo.md）
 ├── definitions.json          # 拓扑导出（面板 Import definitions 一键导入）
 ├── pyproject.toml            # 项目元数据与依赖
 ├── Makefile                  # 常用命令（make run / make setup 等）

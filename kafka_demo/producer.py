@@ -1,4 +1,4 @@
-"""生产者：模拟上游 DSS/MySQL 往 competitors.stg 推竞品数据
+"""生产者：模拟上游 DSS 系统往 topic `dss.competitors` 推竞品数据，发完即结束
 
 跑：python -m kafka_demo.producer [条数]
 默认发 5 条。消息体是 JSON，key 用 asin（同 asin 落同一分区，保证顺序，
